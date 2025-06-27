@@ -2,7 +2,6 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.25%2B-red.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 **Dinheiro $mart** é uma aplicação web desenvolvida em Python com Streamlit, projetada para auxiliar investidores na análise fundamentalista de ativos, gerenciamento de portfólio e teste de estratégias de investimento.
 
@@ -120,6 +119,14 @@ sender_password = "sua_senha_de_app_do_gmail"
 ```bash
 streamlit run app.py
 ```
+
+---
+
+## ⚖️ Licença
+
+Este software é distribuído sob uma licença proprietária. Todos os direitos são reservados.
+
+Você pode usar o software para fins pessoais, mas não pode redistribuí-lo, modificá-lo ou usá-lo para fins comerciais sem a permissão explícita do autor. Consulte o arquivo `LICENSE` para obter todos os detalhes.
 
 ---
 
