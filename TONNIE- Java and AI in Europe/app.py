@@ -12,6 +12,7 @@ import time
 import requests
 import plotly.express as px
 import numpy as np # Added for numerical operations in backtesting
+import bcrypt # Importa bcrypt para hash de senhas
 
 # --- Funções de Análise ---
 
@@ -661,7 +662,9 @@ def salvar_usuario(email, senha, nome, data_nascimento):
     df = pd.read_csv(USERS_FILE)
     if email in df["email"].values:
         return False
-    novo_usuario = pd.DataFrame([{"email": email, "senha": senha, "nome": nome, "data_nascimento": data_nascimento}])
+    # Gera hash seguro da senha
+    senha_hash = bcrypt.hashpw(senha.encode(), bcrypt.gensalt()).decode()
+    novo_usuario = pd.DataFrame([{"email": email, "senha": senha_hash, "nome": nome, "data_nascimento": data_nascimento}])
     df = pd.concat([df, novo_usuario], ignore_index=True)
     df.to_csv(USERS_FILE, index=False)
     return True
@@ -670,7 +673,21 @@ def autenticar_usuario(email, senha):
     if not os.path.exists(USERS_FILE):
         return False
     df = pd.read_csv(USERS_FILE)
-    return ((df["email"] == email) & (df["senha"] == senha)).any()
+    usuario_data = df[df["email"] == email]
+    if usuario_data.empty:
+        return False
+
+    senha_hash_salva = usuario_data.iloc[0]["senha"]
+
+    # Garante que a senha salva é uma string válida antes de tentar decodificar
+    if not isinstance(senha_hash_salva, str):
+        return False
+
+    try:
+        return bcrypt.checkpw(senha.encode('utf-8'), senha_hash_salva.encode('utf-8'))
+    except ValueError:
+        # Se o hash salvo for inválido (ex: senha antiga em texto plano), o login falha.
+        return False
 
 def obter_dados_usuario(email):
     if not os.path.exists(USERS_FILE):
@@ -758,10 +775,11 @@ def pagina_recuperar_senha():
             return
         df = pd.read_csv(USERS_FILE)
         if email in df["email"].values:
-            senha = df[df["email"] == email]["senha"].values[0]
-            sucesso, erro = enviar_email(destinatario=email, assunto="Recuperação de Senha - Análise Fundamentalista", corpo=f"Olá! Sua senha cadastrada em nossa ferramenta é: {senha}")
+            # NUNCA envie a senha ou o hash por e-mail.
+            corpo_email = "Olá,\n\nRecebemos uma solicitação de recuperação de senha para sua conta. Se foi você, por favor, tente fazer login novamente ou crie uma nova conta se necessário.\n\nPor motivos de segurança, nunca enviamos senhas por e-mail.\n\nAtenciosamente,\nSua Ferramenta de Análise Fundamentalista"
+            sucesso, erro = enviar_email(destinatario=email, assunto="Recuperação de Senha - Análise Fundamentalista", corpo=corpo_email)
             if sucesso:
-                st.success("E-mail de recuperação enviado com sucesso!")
+                st.success("Um e-mail com instruções foi enviado para sua caixa de entrada.")
             # A mensagem de erro já é tratada dentro de enviar_email, ou será a genérica.
         else:
             st.error("E-mail não encontrado em nossa base de dados.")
@@ -1420,26 +1438,38 @@ def pagina_carteira():
     elif dados_carteira.get("erro"):
         st.error(f"Ocorreu um erro ao carregar sua carteira: {dados_carteira['erro']}")
     else:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         with c1:
-            st.markdown("Custo da Carteira")
-            st.markdown(f"<div style='font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['total_investido']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Custo da Carteira</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['total_investido']:,.2f}</div>", unsafe_allow_html=True)
         with c2:
-            st.markdown("Valor Atual")
-            st.markdown(f"<div style='font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['valor_atual_total']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Valor Atual</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['valor_atual_total']:,.2f}</div>", unsafe_allow_html=True)
         with c3:
-            st.markdown("L/P Não Realizado")
-            st.markdown(f"<div style='font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['lucro_nao_realizado_total']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Lucro Não Realizado</div>", unsafe_allow_html=True)
+            posicao_atual_df = dados_carteira.get('posicao_atual_df')
+            if posicao_atual_df is not None and not posicao_atual_df.empty and 'Lucro/Prejuízo Não Realizado' in posicao_atual_df.columns:
+                lucros_positivos = posicao_atual_df[posicao_atual_df['Lucro/Prejuízo Não Realizado'] > 0]['Lucro/Prejuízo Não Realizado'].sum()
+                st.markdown(f"<div style='text-align:center; color:green; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {lucros_positivos:,.2f}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ 0,00</div>", unsafe_allow_html=True)
         with c4:
-            st.markdown("Lucro Realizado")
-            st.markdown(f"<div style='color:green; font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['lucros_realizados_total']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Prejuízo Não Realizado</div>", unsafe_allow_html=True)
+            posicao_atual_df = dados_carteira.get('posicao_atual_df')
+            if posicao_atual_df is not None and not posicao_atual_df.empty and 'Lucro/Prejuízo Não Realizado' in posicao_atual_df.columns:
+                prejuizos_negativos = posicao_atual_df[posicao_atual_df['Lucro/Prejuízo Não Realizado'] < 0]['Lucro/Prejuízo Não Realizado'].sum()
+                st.markdown(f"<div style='text-align:center; color:red; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {abs(prejuizos_negativos):,.2f}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ 0,00</div>", unsafe_allow_html=True)
         with c5:
-            st.markdown("Prejuízo Realizado")
-            # Exibe o prejuízo como um valor positivo, pois o título já indica que é uma perda.
-            st.markdown(f"<div style='color:red; font-size:1.6rem; font-weight:600;'>R$ {abs(dados_carteira['prejuizos_realizados_total']):,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("Lucro Realizado")
+            st.markdown(f"<div style='color:green; font-size:1.3rem; font-weight:600;'>R$ {dados_carteira['lucros_realizados_total']:,.2f}</div>", unsafe_allow_html=True)
         with c6:
+            st.markdown("Prejuízo Realizado")
+            st.markdown(f"<div style='color:red; font-size:1.3rem; font-weight:600;'>R$ {abs(dados_carteira['prejuizos_realizados_total']):,.2f}</div>", unsafe_allow_html=True)
+        with c7:
             st.markdown("Dividendos Recebidos")
-            st.markdown(f"<div style='color:blue; font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['total_dividendos_recebidos']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color:blue; font-size:1.3rem; font-weight:600;'>R$ {dados_carteira['total_dividendos_recebidos']:,.2f}</div>", unsafe_allow_html=True)
 
         posicao_atual_df = dados_carteira['posicao_atual_df']
         if not posicao_atual_df.empty:
@@ -1550,13 +1580,13 @@ def pagina_carteira():
             posicao_atual_df['preco_alvo'].fillna(0.0, inplace=True)
             
             st.subheader("Posição Atual e Alertas de Preço")
-            header_cols = st.columns([2, 1, 2, 2, 2, 2, 3])
-            headers = ['Ticker', 'Qtd.', 'Preço Médio', 'Preço Atual', 'Valor Atual', 'L/P Não Realizado', 'Alerta de Preço (R$)']
+            header_cols = st.columns([2, 1, 2, 2, 2, 1.5, 1.5, 3])
+            headers = ['Ticker', 'Qtd.', 'Preço Médio', 'Preço Atual', 'Valor Atual', 'Lucro Não Realizado', 'Prejuízo Não Realizado', 'Alerta de Preço (R$)']
             for col, header in zip(header_cols, headers): col.markdown(f"**{header}**")
             st.markdown("---")
 
             for index, row in posicao_atual_df.iterrows():
-                row_cols = st.columns([2, 1, 2, 2, 2, 2, 3])
+                row_cols = st.columns([2, 1, 2, 2, 2, 1.5, 1.5, 3])
                 row_cols[0].write(f"**{row['ticker']}**")
                 row_cols[1].write(f"{row['quantidade_atual']:.2f}")
                 row_cols[2].write(f"R$ {row['preco_medio_ponderado']:.2f}")
@@ -1568,10 +1598,20 @@ def pagina_carteira():
                 valor_atual_str = f"R$ {row['Valor Atual']:.2f}" if pd.notna(row['Valor Atual']) else "N/A"
                 row_cols[4].write(valor_atual_str)
 
-                lp_str = f"R$ {row['Lucro/Prejuízo Não Realizado']:+.2f} ({row['Variação (%)']:+.2f}%)" if pd.notna(row['Lucro/Prejuízo Não Realizado']) else "N/A"
-                row_cols[5].write(lp_str)
+                # Separar lucro e prejuízo não realizados
+                if pd.notna(row['Lucro/Prejuízo Não Realizado']):
+                    lp_valor = row['Lucro/Prejuízo Não Realizado']
+                    if lp_valor > 0:
+                        row_cols[5].markdown(f"<span style='color:green'>R$ {lp_valor:.2f}</span>", unsafe_allow_html=True)
+                        row_cols[6].write("-")
+                    else:
+                        row_cols[5].write("-")
+                        row_cols[6].markdown(f"<span style='color:red'>R$ {abs(lp_valor):.2f}</span>", unsafe_allow_html=True)
+                else:
+                    row_cols[5].write("N/A")
+                    row_cols[6].write("N/A")
                 
-                with row_cols[6]:
+                with row_cols[7]:
                     valor_input = st.number_input("Preço Alvo", min_value=0.0, value=float(row['preco_alvo']), format="%.2f", label_visibility="collapsed", key=f"alert_input_{row['ticker']}")
                     if st.button("Salvar", key=f"save_alert_{row['ticker']}", use_container_width=True):
                         salvar_alerta(email_usuario, row['ticker'], valor_input)
@@ -1673,27 +1713,38 @@ def pagina_dashboard():
     elif dados_carteira.get("erro"):
         st.error(f"Ocorreu um erro ao carregar o resumo da sua carteira: {dados_carteira['erro']}")
     else:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         with c1:
-            st.markdown("Custo Total")
-            st.markdown(f"<div style='font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['total_investido']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Custo Total</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['total_investido']:,.2f}</div>", unsafe_allow_html=True)
         with c2:
-            st.markdown("Valor Atual")
-            st.markdown(f"<div style='font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['valor_atual_total']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Valor Atual</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['valor_atual_total']:,.2f}</div>", unsafe_allow_html=True)
         with c3:
-            st.markdown("L/P Não Realizado")
-            lucro_nao_realizado = dados_carteira['lucro_nao_realizado_total']
-            cor_lp = "green" if lucro_nao_realizado >= 0 else "red"
-            st.markdown(f"<div style='color:{cor_lp}; font-size:1.6rem; font-weight:600;'>R$ {lucro_nao_realizado:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Lucro Não Realizado</div>", unsafe_allow_html=True)
+            posicao_atual_df = dados_carteira.get('posicao_atual_df')
+            if posicao_atual_df is not None and not posicao_atual_df.empty and 'Lucro/Prejuízo Não Realizado' in posicao_atual_df.columns:
+                lucros_positivos = posicao_atual_df[posicao_atual_df['Lucro/Prejuízo Não Realizado'] > 0]['Lucro/Prejuízo Não Realizado'].sum()
+                st.markdown(f"<div style='text-align:center; color:green; font-size:1.6rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {lucros_positivos:,.2f}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='text-align:center; font-size:1.6rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ 0,00</div>", unsafe_allow_html=True)
         with c4:
-            st.markdown("Lucro Realizado")
-            st.markdown(f"<div style='color:green; font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['lucros_realizados_total']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Prejuízo Não Realizado</div>", unsafe_allow_html=True)
+            posicao_atual_df = dados_carteira.get('posicao_atual_df')
+            if posicao_atual_df is not None and not posicao_atual_df.empty and 'Lucro/Prejuízo Não Realizado' in posicao_atual_df.columns:
+                prejuizos_negativos = posicao_atual_df[posicao_atual_df['Lucro/Prejuízo Não Realizado'] < 0]['Lucro/Prejuízo Não Realizado'].sum()
+                st.markdown(f"<div style='text-align:center; color:red; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {abs(prejuizos_negativos):,.2f}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='text-align:center; font-size:1.6rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ 0,00</div>", unsafe_allow_html=True)
         with c5:
-            st.markdown("Prejuízo Realizado")
-            st.markdown(f"<div style='color:red; font-size:1.6rem; font-weight:600;'>R$ {abs(dados_carteira['prejuizos_realizados_total']):,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Lucro Realizado</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; color:green; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['lucros_realizados_total']:,.2f}</div>", unsafe_allow_html=True)
         with c6:
-            st.markdown("Dividendos Recebidos")
-            st.markdown(f"<div style='color:blue; font-size:1.6rem; font-weight:600;'>R$ {dados_carteira['total_dividendos_recebidos']:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Prejuízo Realizado</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; color:red; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {abs(dados_carteira['prejuizos_realizados_total']):,.2f}</div>", unsafe_allow_html=True)
+        with c7:
+            st.markdown("<div style='text-align:center; margin-bottom:10px;'>Dividendos Recebidos</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; color:blue; font-size:1.3rem; font-weight:600; height:40px; display:flex; align-items:center; justify-content:center;'>R$ {dados_carteira['total_dividendos_recebidos']:,.2f}</div>", unsafe_allow_html=True)
 
         st.markdown("---")
         st.subheader("Evolução do Patrimônio")
@@ -2213,9 +2264,9 @@ def pagina_backtesting():
     with col4:
         long_ma_period = st.number_input("Período da Média Móvel Longa", min_value=10, value=50, step=1)
     with col5:
-        start_date = st.date_input("Data de Início", value=datetime(2020, 1, 1), max_value=datetime.now())
+        start_date = st.date_input("Data de Início", value=datetime(2020, 1, 1), max_value=datetime.now(), format="DD/MM/YYYY")
     with col6:
-        end_date = st.date_input("Data de Fim", value=datetime.now(), max_value=datetime.now())
+        end_date = st.date_input("Data de Fim", value=datetime.now(), max_value=datetime.now(), format="DD/MM/YYYY")
 
     if st.button("Executar Backtest", type="primary", use_container_width=True):
         if short_ma_period >= long_ma_period:
@@ -2334,7 +2385,7 @@ def main():
     else:
         with st.sidebar:
             nome_usuario = st.session_state.usuario_logado['nome']
-            st.success(f"Bem-vindo(a)!\n\n{nome_usuario}")
+            st.markdown(f"**{nome_usuario}**")
             if st.button("Sair", use_container_width=True):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
