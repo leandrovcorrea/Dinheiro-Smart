@@ -1,9 +1,12 @@
 # Arquivos de dados gerados pela aplicação
 *.csv
+*.db
 
 # Arquivos de configuração local e segredos
 .streamlit/secrets.toml
+.env
 
 # Arquivos de cache e ambiente do Python
 __pycache__/
 *.pyc
+*.log

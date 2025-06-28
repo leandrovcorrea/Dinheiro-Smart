@@ -700,8 +700,12 @@ def obter_dados_usuario(email):
 
 def enviar_email(destinatario, assunto, corpo):
     try:
-        remetente = st.secrets["email_credentials"]["sender_email"]
-        senha_email = st.secrets["email_credentials"]["sender_password"]
+        import os
+        remetente = os.getenv("SENDER_EMAIL") or st.secrets.get("email_credentials", {}).get("sender_email")
+        senha_email = os.getenv("SENDER_PASSWORD") or st.secrets.get("email_credentials", {}).get("sender_password")
+        
+        if not remetente or not senha_email:
+            return False, "Credenciais de email não configuradas"
 
         msg = MIMEText(corpo)
         msg["Subject"] = assunto
