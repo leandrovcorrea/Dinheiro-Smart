@@ -1,0 +1,1284 @@
+import streamlit as st
+import math
+import pandas as pd
+from datetime import datetime
+import yfinance as yf
+import os
+import smtplib
+from email.mime.text import MIMEText
+import plotly.express as px
+
+# --- Funções de Análise ---
+
+def calcular_preco_justo_graham(info: dict, taxa_crescimento_anual: float, y_bond_yield: float):
+    """[MODELO 1] Calcula o preço justo de uma ação usando a fórmula de Benjamin Graham."""
+    try:
+        ticker = info.get('symbol')
+
+        lpa = info.get('trailingEps')
+        preco_atual = info.get('currentPrice') or info.get('regularMarketPrice')
+
+        if lpa is None:
+            return {"erro": f"Não foi possível encontrar o Lucro Por Ação (LPA) para o ticker {ticker}."}
+
+        if lpa <= 0:
+            return {"erro": f"O modelo de Graham não se aplica a empresas com lucro negativo. LPA atual: {lpa}"}
+
+        if preco_atual is None:
+             return {"erro": f"Não foi possível encontrar o preço atual para o ticker {ticker}."}
+
+        # Fórmula de Graham Revisada: Preço Justo = (LPA * (8.5 + 2g) * 4.4) / Y
+        preco_justo = (lpa * (8.5 + 2 * taxa_crescimento_anual) * 4.4) / y_bond_yield
+
+        resultado = {
+            "ticker": ticker,
+            "modelo": "Preço Justo de Graham",
+            "valor_calculado": preco_justo,
+            "preco_atual": preco_atual,
+            "lpa_ultimos_12m": lpa,
+            "bond_yield_usado_%": y_bond_yield,
+            "taxa_crescimento_usada_%": taxa_crescimento_anual
+        }
+
+        margem_seguranca = ((preco_justo - preco_atual) / preco_atual) * 100
+        resultado["margem_seguranca_%"] = margem_seguranca
+        
+        return resultado
+
+    except Exception as e:
+        return {"erro": f"Erro ao calcular o Preço Justo de Graham. Detalhe: {e}"}
+
+def calcular_numero_graham(info: dict):
+    """[MODELO 2] Calcula o Número de Graham para uma ação."""
+    try:
+        ticker = info.get('symbol')
+        lpa = info.get('trailingEps')
+        vpa = info.get('bookValue')
+        preco_atual = info.get('currentPrice') or info.get('regularMarketPrice')
+
+        if lpa is None or vpa is None:
+            return {"erro": f"Não foi possível obter LPA ou VPA para '{ticker}'. O dado pode não estar disponível."}
+
+        if lpa <= 0 or vpa <= 0:
+            return {"erro": f"O Número de Graham não se aplica a empresas com LPA ou VPA negativos. LPA: {lpa:.2f}, VPA: {vpa:.2f}"}
+
+        numero_graham = math.sqrt(22.5 * lpa * vpa)
+
+        resultado = {
+            "ticker": ticker,
+            "modelo": "Número de Graham (Valor)",
+            "valor_calculado": numero_graham,
+            "preco_atual": preco_atual,
+            "lpa_ultimos_12m": lpa,
+            "vpa": vpa
+        }
+
+        margem_seguranca = ((numero_graham - preco_atual) / preco_atual) * 100
+        resultado["margem_seguranca_%"] = margem_seguranca
+
+        return resultado
+    except Exception as e:
+        return {"erro": f"Erro ao calcular o Número de Graham. Detalhe: {e}"}
+
+def calcular_preco_teto_bazin(info: dict):
+    """[MODELO 3] Calcula o Preço-Teto de Bazin, usando a média dos dividendos dos últimos 5 anos."""
+    try:
+        ticker = info.get('symbol')
+        dividendos_hist = info.get('dividendos')
+        preco_atual = info.get('currentPrice') or info.get('regularMarketPrice')
+
+        if dividendos_hist is None or dividendos_hist.empty:
+            return {"erro": f"O modelo de Bazin não se aplica. A empresa '{ticker}' não tem histórico de dividendos."}
+
+        # Garante que os datetimes sejam timezone-naive para evitar erros de comparação.
+        # Faz uma cópia para não modificar o objeto original em cache.
+        dividendos_hist_naive = dividendos_hist.copy()
+        if dividendos_hist_naive.index.tz is not None:
+            dividendos_hist_naive.index = dividendos_hist_naive.index.tz_localize(None)
+
+        # Calcula a média dos dividendos dos últimos 5 anos
+        hoje = pd.to_datetime('today').normalize() # .normalize() zera a hora e mantém naive
+        cinco_anos_atras = hoje - pd.DateOffset(years=5)
+        
+        dividendos_5a = dividendos_hist_naive[dividendos_hist_naive.index > cinco_anos_atras]
+        
+        if dividendos_5a.empty:
+            return {"erro": f"O modelo de Bazin não se aplica. A empresa '{ticker}' não pagou dividendos nos últimos 5 anos."}
+
+        soma_dividendos_5a = dividendos_5a.sum()
+        media_anual_dividendos = soma_dividendos_5a / 5
+
+        preco_teto = media_anual_dividendos / 0.06
+
+        resultado = {
+            "ticker": ticker,
+            "modelo": "Preço-Teto Bazin (Média 5A)",
+            "valor_calculado": preco_teto,
+            "preco_atual": preco_atual,
+            "media_dividendo_anual_5a": media_anual_dividendos
+        }
+
+        margem_seguranca = ((preco_teto - preco_atual) / preco_atual) * 100
+        resultado["margem_seguranca_%"] = margem_seguranca
+        return resultado
+    except Exception as e:
+        return {"erro": f"Erro ao calcular o Preço-Teto de Bazin. Detalhe: {e}"}
+
+@st.cache_data(ttl=3600) # Cache de 1 hora
+def obter_dados_acao(ticker: str):
+    """
+    Busca e valida os dados de uma ação usando a biblioteca yfinance.
+    """
+    try:
+        ticker_obj = yf.Ticker(ticker)
+
+        # A chamada .info é a principal. Se falhar, o ticker provavelmente não existe.
+        info = ticker_obj.info
+        # Validação: um ticker válido deve retornar um dicionário de informações com um preço.
+        # A checagem anterior por 'trailingEps' era muito restritiva.
+        if not info or (info.get('currentPrice') is None and info.get('regularMarketPrice') is None):
+             return {"erro": f"Não foi possível encontrar dados para o ticker '{ticker}'. Verifique se o ticker está correto ou se há dados de preço disponíveis."}
+
+        # Busca os outros dados necessários
+        historico_precos = ticker_obj.history(period="max")
+        dividendos = ticker_obj.dividends
+        balance_sheet = ticker_obj.balance_sheet
+        financials = ticker_obj.financials
+
+        # Estrutura os dados no formato esperado pelo resto da aplicação
+        dados = {
+            'symbol': info.get('symbol'),
+            'longName': info.get('longName') or info.get('shortName'),
+            'quoteType': info.get('quoteType'),
+            'currentPrice': info.get('currentPrice') or info.get('regularMarketPrice'),
+            'trailingEps': info.get('trailingEps'),
+            'bookValue': info.get('bookValue'),
+            'trailingAnnualDividendRate': info.get('trailingAnnualDividendRate'),
+            'trailingPE': info.get('trailingPE'),
+            'priceToBook': info.get('priceToBook'),
+            'returnOnEquity': info.get('returnOnEquity'),
+            'enterpriseValue': info.get('enterpriseValue'),
+            'ebitda': info.get('ebitda'),
+            'historico_precos': historico_precos.rename(columns={'Close': 'Close'}), # Garante nome da coluna
+            'dividendos': dividendos.rename("Dividends"), # Garante nome da série
+            'balance_sheet': balance_sheet,
+            'financials': financials,
+        }
+        return dados
+
+    except Exception as e:
+        return {"erro": f"Ocorreu uma falha inesperada ao buscar dados com yfinance. Detalhe: {e}"}
+
+def exibir_resultados_comparativos(resultados: list):
+    """Exibe os resultados dos diferentes modelos em colunas para comparação."""
+    st.subheader("Painel de Análise Comparativa")
+    
+    # Filtra apenas os resultados bem-sucedidos para exibição
+    sucessos = [r for r in resultados if "erro" not in r]
+    erros = [r for r in resultados if "erro" in r]
+
+    if not sucessos:
+        st.error("Nenhum modelo pôde ser aplicado com sucesso para este ticker.")
+    else:
+        cols = st.columns(len(sucessos))
+        for i, res in enumerate(sucessos):
+            with cols[i]:
+                st.subheader(res['modelo'])
+                st.metric(
+                    label="Valor Calculado",
+                    value=f"$ {res['valor_calculado']:.2f}",
+                    delta=f"{res['margem_seguranca_%']:.2f}% vs Preço Atual",
+                    delta_color="normal"
+                )
+                st.metric(label="Preço Atual", value=f"$ {res['preco_atual']:.2f}")
+                
+                with st.expander("Detalhes"):
+                    # Create a copy to avoid modifying the original dict
+                    details_to_show = res.copy()
+                    # Remove keys we don't want to show in details
+                    for key in ['ticker', 'modelo', 'valor_calculado', 'preco_atual', 'margem_seguranca_%', 'erro']:
+                        details_to_show.pop(key, None)
+
+                    if not details_to_show:
+                        st.text("Nenhum detalhe adicional para este modelo.")
+                    
+                    for chave, valor in details_to_show.items():
+                        label = chave.replace('_', ' ').replace('%', '').title()
+                        if chave.endswith("_%"):
+                            st.markdown(f"**{label}:** `{valor:.2f}%`")
+                        elif isinstance(valor, float):
+                            st.markdown(f"**{label}:** `$ {valor:.2f}`")
+                        else:
+                            st.markdown(f"**{label}:** `{valor}`")
+
+    # Exibe os erros dos modelos que falharam
+    for erro in erros:
+        st.warning(f"**Modelo {erro.get('modelo', '')} não aplicável:** {erro['erro']}")
+
+def exibir_indicadores_chave(dados_acao: dict):
+    """Exibe um painel com os principais indicadores fundamentalistas."""
+    st.subheader("Indicadores Fundamentais")
+
+    # Helper function to robustly get financial data from yfinance's DataFrame format.
+    def get_financial_metric(dataframe, key):
+        if dataframe is None or dataframe.empty or key not in dataframe.index:
+            return None
+        # Pega o valor da coluna mais recente (índice 0)
+        value = dataframe.loc[key, dataframe.columns[0]]
+        return value if pd.notna(value) else None
+
+    # --- Cálculos Manuais e Robustos ---
+    balance_sheet = dados_acao.get('balance_sheet')
+    financials = dados_acao.get('financials')
+
+    # 1. Dividend Yield
+    dy = dados_acao.get('dividendYield') # yfinance já fornece o DY
+    preco = dados_acao.get('currentPrice') or dados_acao.get('regularMarketPrice')
+
+    # 2. Dívida/Patrimônio (Debt/Equity)
+    # yfinance usa nomes diferentes nos relatórios
+    total_debt = get_financial_metric(balance_sheet, 'Total Liab')
+    total_equity = get_financial_metric(balance_sheet, 'Total Stockholder Equity')
+    debt_to_equity_calculado = None
+    if total_debt is not None and total_equity is not None and total_equity > 0:
+        debt_to_equity_calculado = total_debt / total_equity
+
+    # 3. ROE (Return on Equity)
+    net_income = get_financial_metric(financials, 'Net Income')
+    roe_calculado = None
+    if net_income is not None and total_equity is not None and total_equity > 0:
+        roe_calculado = net_income / total_equity
+
+    # 4. EV/EBITDA
+    enterprise_value = dados_acao.get('enterpriseValue')
+    ebitda = dados_acao.get('ebitda')
+    ev_ebitda_calculado = None
+    if enterprise_value is not None and ebitda is not None and ebitda > 0:
+        ev_ebitda_calculado = enterprise_value / ebitda
+
+    indicadores = {
+        "P/L (Preço/Lucro)": dados_acao.get('trailingPE'),
+        "P/VP (Preço/Valor Pat.)": dados_acao.get('priceToBook'),
+        "Dividend Yield": dy,
+        "ROE (Retorno/Pat. Líq.)": roe_calculado,
+        "Dív. Bruta/Patrimônio": debt_to_equity_calculado,
+    }
+    indicadores["EV/EBITDA"] = ev_ebitda_calculado
+
+    # Filtra indicadores que não têm valor para não poluir a tela
+    indicadores_validos = {k: v for k, v in indicadores.items() if pd.notna(v)}
+
+    if not indicadores_validos:
+        st.info("Não há indicadores fundamentalistas disponíveis para este ticker.")
+        return
+
+    cols = st.columns(len(indicadores_validos))
+    for i, (nome, valor) in enumerate(indicadores_validos.items()):
+        with cols[i]:
+            if "Yield" in nome or "ROE" in nome:
+                st.metric(label=nome, value=f"{valor*100:.2f}%")
+            else:
+                st.metric(label=nome, value=f"{valor:.2f}")
+
+def exibir_grafico_precos_interativo(historico_completo: pd.DataFrame, ticker_symbol: str):
+    """Exibe um gráfico de preços com seletor de período, usando dados já carregados."""
+    display_ticker = ticker_symbol.replace(".SA", "")
+    st.subheader(f"Histórico de Preços - {display_ticker}")
+    
+    periodos = ["1M", "6M", "1A", "5A", "Máx"]
+    # Adicionar uma chave única (key) ao widget ajuda o Streamlit a gerenciá-lo melhor
+    periodo_selecionado = st.radio("Selecione o Período:", periodos, horizontal=True, index=2, key=f"periodo_{ticker_symbol}")
+    
+    if historico_completo.empty:
+        st.warning("Não há dados de histórico de preços para exibir.")
+        return
+
+    # Filtra o DataFrame em memória em vez de fazer uma nova chamada de API
+    hoje = pd.to_datetime('today').tz_localize(None) # Garante que 'hoje' seja timezone-naive
+    historico_completo.index = historico_completo.index.tz_localize(None) # Garante que o índice seja timezone-naive
+
+    if periodo_selecionado == "1M":
+        historico_filtrado = historico_completo[historico_completo.index > hoje - pd.DateOffset(months=1)]
+    elif periodo_selecionado == "6M":
+        historico_filtrado = historico_completo[historico_completo.index > hoje - pd.DateOffset(months=6)]
+    elif periodo_selecionado == "1A":
+        historico_filtrado = historico_completo[historico_completo.index > hoje - pd.DateOffset(years=1)]
+    elif periodo_selecionado == "5A":
+        historico_filtrado = historico_completo[historico_completo.index > hoje - pd.DateOffset(years=5)]
+    else: # "Máx"
+        historico_filtrado = historico_completo
+        
+    st.line_chart(historico_filtrado['Close'])
+
+def exibir_grafico_dividendos(dados_acao: dict):
+    """Exibe um gráfico com o histórico de dividendos, se houver."""
+    dividendos = dados_acao.get('dividendos')
+    ticker_symbol = dados_acao.get('symbol', '')
+    if dividendos is not None and not dividendos.empty:
+        display_ticker = ticker_symbol.replace(".SA", "")
+        st.subheader(f"Histórico de Dividendos - {display_ticker}")
+        st.bar_chart(dividendos)
+
+
+
+# --- Interface do Streamlit ---
+
+# Callback para iniciar a análise. Será usado tanto pelo botão quanto pelo Enter no campo de texto.
+def iniciar_analise():
+    """Pega o valor do widget de input, valida e o define como o ticker a ser analisado."""
+    ticker_input = st.session_state.get("ticker_input_key", "").strip().upper()
+    
+    # Limpa o ticker analisado e o erro de input a cada nova tentativa
+    st.session_state.ticker_analisado = ""
+    st.session_state.ticker_foi_ajustado = False # Flag para a mensagem informativa
+    if 'input_error' in st.session_state:
+        del st.session_state.input_error
+
+    # Se o ticker já tiver um ponto (ex: BRK.B), assume que o formato está correto.
+    # Se terminar com dígito e não tiver ponto, assume que é brasileiro e adiciona '.SA'.
+    if ticker_input and '.' not in ticker_input and ticker_input[-1].isdigit():
+        ticker_para_analise = f"{ticker_input}.SA"
+        st.session_state.ticker_foi_ajustado = True
+    else:
+        ticker_para_analise = ticker_input
+
+    st.session_state.ticker_analisado = ticker_para_analise
+
+st.set_page_config(page_title="Análise Fundamentalista", layout="wide", page_icon="📊")
+st.markdown('<h1 style="font-size:3rem;">📊 Ferramenta de Análise Fundamentalista</h1>', unsafe_allow_html=True)
+
+# Inicializar o estado da sessão para armazenar o histórico
+if 'historico' not in st.session_state:
+    st.session_state.historico = []
+if 'ticker_analisado' not in st.session_state:
+    st.session_state.ticker_analisado = ""
+if 'ticker_foi_ajustado' not in st.session_state:
+    st.session_state.ticker_foi_ajustado = False
+if 'input_error' not in st.session_state:
+    st.session_state.input_error = None
+
+if 'auth_page' not in st.session_state:
+    st.session_state.auth_page = "login"
+
+# --- Funções de Usuário (Refatoradas) ---
+
+USERS_FILE = "usuarios.csv"
+
+def salvar_usuario(email, senha, nome, data_nascimento):
+    if not os.path.exists(USERS_FILE):
+        df = pd.DataFrame(columns=["email", "senha", "nome", "data_nascimento"])
+        df.to_csv(USERS_FILE, index=False)
+    df = pd.read_csv(USERS_FILE)
+    if email in df["email"].values:
+        return False
+    novo_usuario = pd.DataFrame([{"email": email, "senha": senha, "nome": nome, "data_nascimento": data_nascimento}])
+    df = pd.concat([df, novo_usuario], ignore_index=True)
+    df.to_csv(USERS_FILE, index=False)
+    return True
+
+def autenticar_usuario(email, senha):
+    if not os.path.exists(USERS_FILE):
+        return False
+    df = pd.read_csv(USERS_FILE)
+    return ((df["email"] == email) & (df["senha"] == senha)).any()
+
+def obter_dados_usuario(email):
+    if not os.path.exists(USERS_FILE):
+        return None
+    df = pd.read_csv(USERS_FILE)
+    usuario_data = df[df["email"] == email]
+    if not usuario_data.empty:
+        return usuario_data.iloc[0]
+    return None
+
+def enviar_email(destinatario, assunto, corpo):
+    try:
+        remetente = st.secrets["email_credentials"]["sender_email"]
+        senha_email = st.secrets["email_credentials"]["sender_password"]
+
+        msg = MIMEText(corpo)
+        msg["Subject"] = assunto
+        msg["From"] = remetente
+        msg["To"] = destinatario
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(remetente, senha_email)
+            server.sendmail(remetente, destinatario, msg.as_string())
+        return True, None
+    except Exception as e:
+        st.error("Falha ao configurar o serviço de e-mail. Verifique o arquivo secrets.toml.")
+        return False, str(e)
+
+def pagina_login():
+    st.subheader("Login")
+    with st.form("form_login"):
+        email = st.text_input("E-mail", key="login_email", autocomplete="email")
+        senha = st.text_input("Senha", type="password", key="login_senha", autocomplete="current-password")
+        submit = st.form_submit_button("Entrar", use_container_width=True)
+        if submit:
+            if autenticar_usuario(email, senha):
+                dados_usuario = obter_dados_usuario(email)
+                st.session_state.usuario_logado = dados_usuario
+                st.rerun()
+            else:
+                st.error("E-mail ou senha incorretos.")
+
+    if st.button("Criar nova conta"):
+        st.session_state.auth_page = "criar_conta"
+        st.rerun()
+    if st.button("Esqueci minha senha"):
+        st.session_state.auth_page = "recuperar_senha"
+        st.rerun()
+
+def pagina_criar_conta():
+    st.subheader("Criar Nova Conta")
+    with st.form("form_criar_conta", clear_on_submit=True): # Adicionado clear_on_submit para limpar campos após envio
+        nome = st.text_input("Nome Completo", key="create_name")
+        data_nascimento = st.date_input(
+            "Data de Nascimento",
+            min_value=datetime(1920, 1, 1),
+            max_value=datetime.now(),
+            key="create_dob",
+            format="DD/MM/YYYY"
+        )
+        email = st.text_input("E-mail", key="create_email")
+        senha = st.text_input("Senha", type="password", key="create_password")
+        senha2 = st.text_input("Confirme a senha", type="password", key="create_confirm_password")
+        submit = st.form_submit_button("Criar Conta", use_container_width=True)
+        if submit:
+            hoje = datetime.now().date()
+            idade = hoje.year - data_nascimento.year - ((hoje.month, hoje.day) < (data_nascimento.month, data_nascimento.day))
+
+            if not nome or not email or not senha:
+                st.error("Preencha todos os campos.")
+            elif idade < 18:
+                st.error("Você deve ter 18 anos ou mais para criar uma conta.")
+            elif senha != senha2:
+                st.error("As senhas não coincidem.")
+            elif salvar_usuario(email, senha, nome, data_nascimento):
+                st.toast("Conta criada com sucesso! Faça seu login.", icon="✅")
+                st.session_state.auth_page = "login"
+                st.rerun()
+            else:
+                st.warning("Este e-mail já está cadastrado.")
+    if st.button("Voltar para Login"):
+        st.session_state.auth_page = "login"
+        st.rerun()
+
+def pagina_recuperar_senha():
+    st.subheader("Recuperar Senha")
+    email = st.text_input("Digite seu e-mail para recuperar a senha", key="recuperar_email")
+    if st.button("Enviar E-mail de Recuperação", use_container_width=True):
+        if not os.path.exists(USERS_FILE):
+            st.error("Nenhuma conta cadastrada no sistema.")
+            return
+        df = pd.read_csv(USERS_FILE)
+        if email in df["email"].values:
+            senha = df[df["email"] == email]["senha"].values[0]
+            sucesso, erro = enviar_email(
+                destinatario=email,
+                assunto="Recuperação de Senha - Análise Fundamentalista",
+                corpo=f"Olá! Sua senha cadastrada em nossa ferramenta é: {senha}"
+            )
+            if sucesso:
+                st.success("E-mail de recuperação enviado com sucesso!")
+            else:
+                st.error(f"Erro ao enviar e-mail: {erro}")
+        else:
+            st.error("E-mail não encontrado em nossa base de dados.")
+    if st.button("Voltar para Login"):
+        st.session_state.auth_page = "login"
+        st.rerun()
+
+# --- Funções da Carteira ---
+
+CARTEIRA_FILE = "carteira.csv"
+
+def adicionar_ativo_carteira(email_usuario, ticker, quantidade, preco_compra, data_compra, tipo):
+    """Adiciona um novo ativo ao arquivo CSV da carteira."""
+    if not os.path.exists(CARTEIRA_FILE):
+        df = pd.DataFrame(columns=["email_usuario", "ticker", "quantidade", "preco_compra", "data_compra", "tipo"])
+        df.to_csv(CARTEIRA_FILE, index=False)
+    
+    df = pd.read_csv(CARTEIRA_FILE)
+    
+    novo_ativo = pd.DataFrame([{
+        "email_usuario": email_usuario,
+        "ticker": ticker,
+        "quantidade": quantidade,
+        "preco_compra": preco_compra,
+        "data_compra": data_compra.strftime('%Y-%m-%d'), # Armazena a data como string
+        "tipo": tipo
+    }])
+    
+    df = pd.concat([df, novo_ativo], ignore_index=True)
+    df.to_csv(CARTEIRA_FILE, index=False)
+    return True
+
+def carregar_carteira_usuario(email_usuario):
+    """Carrega os ativos da carteira de um usuário específico."""
+    if not os.path.exists(CARTEIRA_FILE):
+        return pd.DataFrame()
+    
+    df = pd.read_csv(CARTEIRA_FILE, parse_dates=['data_compra'])
+    return df[df["email_usuario"] == email_usuario].copy()
+
+def atualizar_ativo_carteira(email_usuario, index_transacao, ticker, quantidade, preco_compra, data_compra, tipo):
+    """Atualiza uma transação existente no arquivo CSV da carteira."""
+    if not os.path.exists(CARTEIRA_FILE):
+        return False
+    
+    df = pd.read_csv(CARTEIRA_FILE)
+    
+    # Garante que estamos modificando apenas a transação do usuário logado
+    if index_transacao not in df[df['email_usuario'] == email_usuario].index:
+        st.error("Erro: Tentativa de editar uma transação inválida.")
+        return False
+
+    # Atualiza os dados na linha correspondente do DataFrame original
+    df.loc[index_transacao, 'ticker'] = ticker
+    df.loc[index_transacao, 'quantidade'] = quantidade
+    df.loc[index_transacao, 'preco_compra'] = preco_compra
+    df.loc[index_transacao, 'data_compra'] = data_compra.strftime('%Y-%m-%d')
+    df.loc[index_transacao, 'tipo'] = tipo
+    
+    df.to_csv(CARTEIRA_FILE, index=False)
+    return True
+
+def remover_ativo_carteira(email_usuario, index_transacao):
+    """Remove uma transação do arquivo CSV da carteira."""
+    if not os.path.exists(CARTEIRA_FILE):
+        return False
+        
+    df = pd.read_csv(CARTEIRA_FILE)
+
+    # Garante que estamos removendo apenas a transação do usuário logado
+    if index_transacao not in df[df['email_usuario'] == email_usuario].index:
+        st.error("Erro: Tentativa de remover uma transação inválida.")
+        return False
+
+    df.drop(index_transacao, inplace=True)
+    df.to_csv(CARTEIRA_FILE, index=False)
+    return True
+
+@st.cache_data(ttl=86400) # Cache de 24 horas para infos de empresas
+def obter_info_empresa(ticker):
+    """Obtém os dados de 'info' de uma empresa e os armazena em cache."""
+    try:
+        return yf.Ticker(ticker).info
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=3600) # Cache de 1 hora
+def obter_noticias_ativos(tickers: list):
+    """Busca notícias para uma lista de tickers."""
+    noticias_por_ticker = {}
+    for ticker in tickers:
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            noticias = ticker_obj.news
+            if noticias:
+                # Limita a 3 notícias por ativo para não poluir a tela
+                noticias_por_ticker[ticker] = noticias[:3]
+        except Exception:
+            # Ignora erros para um ticker específico e continua com os outros
+            continue
+    return noticias_por_ticker
+
+def gerar_grafico_evolucao_patrimonio(email_usuario):
+    """Gera um gráfico de linha mostrando a evolução do patrimônio da carteira."""
+    transacoes_df = carregar_carteira_usuario(email_usuario)
+    if transacoes_df.empty:
+        return None # Gráfico não faz sentido com a carteira vazia
+
+    transacoes_df.sort_values(by='data_compra', inplace=True)
+    
+    if 'tipo' not in transacoes_df.columns:
+        transacoes_df['tipo'] = 'Compra'
+    transacoes_df['tipo'].fillna('Compra', inplace=True)
+
+    start_date = transacoes_df['data_compra'].min()
+    end_date = datetime.now()
+    tickers = transacoes_df['ticker'].unique().tolist()
+    
+    if start_date > end_date:
+        st.warning("Data de transação futura detectada na carteira. O gráfico de evolução não pode ser gerado corretamente. Por favor, edite as transações com datas futuras.")
+        return None
+
+    try:
+        precos_hist_raw = yf.download(tickers, start=start_date, end=end_date, progress=False)
+        if precos_hist_raw.empty:
+            return None
+        
+        precos_hist = precos_hist_raw['Adj Close']
+        
+        if isinstance(precos_hist, pd.Series):
+            precos_hist = precos_hist.to_frame(name=tickers[0])
+
+        precos_hist.ffill(inplace=True)
+
+        datas_range = pd.date_range(start=start_date, end=end_date)
+        posicao_df = pd.DataFrame(0.0, index=datas_range, columns=tickers)
+        custo_acumulado_df = pd.DataFrame(0.0, index=datas_range, columns=tickers)
+
+        # Dicionários para calcular o preço médio dinamicamente para a baixa de custo
+        custo_total_ticker = {ticker: 0.0 for ticker in tickers}
+        qtd_total_ticker = {ticker: 0.0 for ticker in tickers}
+
+        for index, row in transacoes_df.iterrows():
+            data_transacao, ticker = row['data_compra'], row['ticker']
+            quantidade, preco = row['quantidade'], row['preco_compra']
+            
+            if row['tipo'] == 'Compra':
+                posicao_df.loc[data_transacao:, ticker] += quantidade
+                custo_a_adicionar = quantidade * preco
+                custo_acumulado_df.loc[data_transacao:, ticker] += custo_a_adicionar
+                
+                custo_total_ticker[ticker] += custo_a_adicionar
+                qtd_total_ticker[ticker] += quantidade
+            else: # Venda
+                preco_medio_antes_venda = (custo_total_ticker[ticker] / qtd_total_ticker[ticker]) if qtd_total_ticker[ticker] > 0 else 0
+                custo_a_remover = quantidade * preco_medio_antes_venda
+                
+                posicao_df.loc[data_transacao:, ticker] -= quantidade
+                custo_acumulado_df.loc[data_transacao:, ticker] -= custo_a_remover
+
+                custo_total_ticker[ticker] -= custo_a_remover
+                qtd_total_ticker[ticker] -= quantidade
+
+        posicao_df = posicao_df.reindex(precos_hist.index, method='ffill').fillna(0)
+        custo_acumulado_df = custo_acumulado_df.reindex(precos_hist.index, method='ffill').fillna(0)
+
+        patrimonio_df = posicao_df * precos_hist
+        evolucao_df = pd.DataFrame({'Patrimônio': patrimonio_df.sum(axis=1), 'Custo Total': custo_acumulado_df.sum(axis=1)})
+        evolucao_df = evolucao_df[evolucao_df.sum(axis=1) > 0]
+
+        if evolucao_df.empty: return None
+        
+        fig = px.line(evolucao_df, title="Evolução do Patrimônio vs. Custo Total", labels={"value": "Valor (R$)", "index": "Data", "variable": "Métrica"})
+        return fig
+    except Exception as e:
+        st.error(f"Erro ao gerar gráfico de evolução do patrimônio: {e}")
+        return None
+
+def verificar_e_enviar_alertas(email_usuario, dados_carteira):
+    """Verifica se algum preço-alvo foi atingido e envia e-mail."""
+    if dados_carteira.get("erro"): return
+
+    alertas_df = carregar_alertas_usuario(email_usuario)
+    alertas_ativos = alertas_df[alertas_df['status'] == 'ativo']
+    if alertas_ativos.empty: return
+
+    posicao_atual_df = dados_carteira.get("posicao_atual_df")
+    if posicao_atual_df is None or posicao_atual_df.empty: return
+
+    merged_df = pd.merge(alertas_ativos, posicao_atual_df[['ticker', 'Preço Atual']], on='ticker', how='inner')
+
+    for index, row in merged_df.iterrows():
+        if row['Preço Atual'] >= row['preco_alvo']:
+            ticker, preco_alvo, preco_atual = row['ticker'], row['preco_alvo'], row['Preço Atual']
+            assunto = f"🔔 Alerta de Preço Atingido: {ticker}"
+            corpo = f"Olá,\n\nSeu alerta de preço para o ativo {ticker} foi atingido.\n\nPreço Alvo: R$ {preco_alvo:,.2f}\nPreço Atual: R$ {preco_atual:,.2f}\n\nAtenciosamente,\nSua Ferramenta de Análise Fundamentalista"
+            sucesso, erro_msg = enviar_email(email_usuario, assunto, corpo)
+            if sucesso:
+                st.toast(f"E-mail de alerta para {ticker} enviado!", icon="📧")
+                df_geral = pd.read_csv(ALERTAS_FILE)
+                df_geral.loc[(df_geral['email_usuario'] == email_usuario) & (df_geral['ticker'] == ticker), 'status'] = 'enviado'
+                df_geral.to_csv(ALERTAS_FILE, index=False)
+
+# --- Funções de Alertas ---
+
+ALERTAS_FILE = "alertas.csv"
+
+def carregar_alertas_usuario(email_usuario):
+    """Carrega todos os alertas de um usuário."""
+    if not os.path.exists(ALERTAS_FILE):
+        return pd.DataFrame(columns=['email_usuario', 'ticker', 'preco_alvo', 'status'])
+    df = pd.read_csv(ALERTAS_FILE)
+    return df[df['email_usuario'] == email_usuario].copy()
+
+def salvar_alerta(email_usuario, ticker, preco_alvo):
+    """Salva ou atualiza um alerta de preço para um usuário e ticker."""
+    if not os.path.exists(ALERTAS_FILE):
+        df = pd.DataFrame(columns=['email_usuario', 'ticker', 'preco_alvo', 'status'])
+    else:
+        df = pd.read_csv(ALERTAS_FILE)
+
+    # Verifica se já existe um alerta para este usuário e ticker
+    filtro = (df['email_usuario'] == email_usuario) & (df['ticker'] == ticker)
+    alerta_existente = df[filtro]
+
+    if preco_alvo > 0:
+        if not alerta_existente.empty:
+            # Atualiza o alerta existente
+            df.loc[alerta_existente.index[0], 'preco_alvo'] = preco_alvo
+            df.loc[alerta_existente.index[0], 'status'] = 'ativo' # Reativa o alerta se estava 'enviado'
+        else:
+            # Adiciona novo alerta
+            novo_alerta = pd.DataFrame([{'email_usuario': email_usuario, 'ticker': ticker, 'preco_alvo': preco_alvo, 'status': 'ativo'}])
+            df = pd.concat([df, novo_alerta], ignore_index=True)
+        st.toast(f"Alerta para {ticker} salvo em R$ {preco_alvo:.2f}!", icon="🔔")
+    else: # Se o preço for 0 ou negativo, remove o alerta
+        if not alerta_existente.empty:
+            df.drop(alerta_existente.index, inplace=True)
+            st.toast(f"Alerta para {ticker} removido.", icon="🗑️")
+
+    df.to_csv(ALERTAS_FILE, index=False)
+    st.rerun()
+
+def calcular_dados_carteira(email_usuario):
+    """Calcula todas as métricas da carteira e retorna um dicionário com os dados."""
+    carteira_df = carregar_carteira_usuario(email_usuario)
+    
+    if carteira_df.empty:
+        return {"erro": "Carteira vazia"}
+
+    try:
+        if 'tipo' not in carteira_df.columns:
+            carteira_df['tipo'] = 'Compra'
+        carteira_df['tipo'].fillna('Compra', inplace=True)
+
+        compras_df = carteira_df[carteira_df['tipo'] == 'Compra'].copy()
+        vendas_df = carteira_df[carteira_df['tipo'] == 'Venda'].copy()
+
+        if not compras_df.empty:
+            compras_df['Custo Total Individual'] = compras_df['quantidade'] * compras_df['preco_compra']
+            compras_agrupadas = compras_df.groupby('ticker').agg(
+                qtd_comprada=('quantidade', 'sum'),
+                custo_total_compras=('Custo Total Individual', 'sum')
+            ).reset_index()
+            compras_agrupadas['preco_medio_ponderado'] = compras_agrupadas['custo_total_compras'] / compras_agrupadas['qtd_comprada']
+        else:
+            compras_agrupadas = pd.DataFrame(columns=['ticker', 'qtd_comprada', 'custo_total_compras', 'preco_medio_ponderado'])
+
+        if not vendas_df.empty:
+            vendas_df['Receita Total Individual'] = vendas_df['quantidade'] * vendas_df['preco_compra']
+            vendas_agrupadas = vendas_df.groupby('ticker').agg(
+                qtd_vendida=('quantidade', 'sum'),
+                receita_total_vendas=('Receita Total Individual', 'sum')
+            ).reset_index()
+        else:
+            vendas_agrupadas = pd.DataFrame(columns=['ticker', 'qtd_vendida', 'receita_total_vendas'])
+
+        carteira_consolidada = pd.merge(compras_agrupadas, vendas_agrupadas, on='ticker', how='outer').fillna(0)
+        carteira_consolidada['quantidade_atual'] = carteira_consolidada['qtd_comprada'] - carteira_consolidada['qtd_vendida']
+        carteira_consolidada['lucro_realizado'] = carteira_consolidada['receita_total_vendas'] - (carteira_consolidada['qtd_vendida'] * carteira_consolidada['preco_medio_ponderado'])
+
+        posicao_atual_df = carteira_consolidada[carteira_consolidada['quantidade_atual'] > 0.00001].copy()
+
+        total_investido, valor_atual_total, lucro_nao_realizado_total = 0, 0, 0
+        if not posicao_atual_df.empty:
+            tickers_na_carteira = posicao_atual_df['ticker'].unique().tolist()
+            tickers_string = " ".join(tickers_na_carteira)
+            # Usar yf.Tickers é mais robusto e retorna uma estrutura de dados consistente.
+            dados_precos_raw = yf.Tickers(tickers_string).download(period='10d', progress=False)
+            
+            precos_finais = {}
+            if not dados_precos_raw.empty:
+                for ticker in tickers_na_carteira:
+                    try:
+                        # A estrutura de yf.Tickers().download() é ('Adj Close', Ticker)
+                        preco = dados_precos_raw[('Adj Close', ticker)].ffill().iloc[-1]
+                        if pd.notna(preco):
+                            precos_finais[ticker] = preco
+                    except (KeyError, IndexError):
+                        # Ignora tickers cujos dados não foram encontrados ou estão malformados.
+                        continue
+
+            posicao_atual_df['Preço Atual'] = posicao_atual_df['ticker'].map(precos_finais)
+            
+            # Filtrar tickers que não tiveram preço atualizado
+            ativos_sem_preco = posicao_atual_df[posicao_atual_df['Preço Atual'].isna()]
+            if not ativos_sem_preco.empty:
+                st.warning(f"Não foi possível obter a cotação atual para: {', '.join(ativos_sem_preco['ticker'].tolist())}.")
+            posicao_atual_df.dropna(subset=['Preço Atual'], inplace=True) # Remove ativos sem preço para evitar erros nos cálculos
+
+            posicao_atual_df['Custo Total Posição'] = posicao_atual_df['quantidade_atual'] * posicao_atual_df['preco_medio_ponderado']
+            posicao_atual_df['Valor Atual'] = posicao_atual_df['quantidade_atual'] * posicao_atual_df['Preço Atual']
+            posicao_atual_df['Lucro/Prejuízo Não Realizado'] = posicao_atual_df['Valor Atual'] - posicao_atual_df['Custo Total Posição']
+            posicao_atual_df['Variação (%)'] = (posicao_atual_df['Lucro/Prejuízo Não Realizado'] / posicao_atual_df['Custo Total Posição'].replace(0, 1)) * 100
+
+            # Recalcular totais após remover ativos sem preço
+            total_investido = posicao_atual_df['Custo Total Posição'].sum() if not posicao_atual_df.empty else 0
+            valor_atual_total = posicao_atual_df['Valor Atual'].sum() if not posicao_atual_df.empty else 0
+            lucro_nao_realizado_total = posicao_atual_df['Lucro/Prejuízo Não Realizado'].sum() if not posicao_atual_df.empty else 0
+
+        lucro_realizado_total = carteira_consolidada['lucro_realizado'].sum()
+
+        return {
+            "posicao_atual_df": posicao_atual_df,
+            "total_investido": total_investido,
+            "valor_atual_total": valor_atual_total,
+            "lucro_nao_realizado_total": lucro_nao_realizado_total,
+            "lucro_realizado_total": lucro_realizado_total,
+            "erro": None
+        }
+    except Exception as e:
+        return {"erro": f"Falha ao calcular dados da carteira: {e}"}
+
+def pagina_carteira():
+    """Renderiza a página da carteira do usuário."""
+    st.header("💼 Minha Carteira de Ativos")
+    email_usuario = st.session_state.usuario_logado['email']
+
+    # --- MODO DE EDIÇÃO ---
+    if 'editing_transaction_id' in st.session_state and st.session_state.editing_transaction_id is not None:
+        transaction_id = st.session_state.editing_transaction_id
+        try:
+            full_carteira_df = pd.read_csv(CARTEIRA_FILE, keep_default_na=False) # keep_default_na para não converter 'NA' em NaN
+            transaction_data = full_carteira_df.loc[transaction_id]
+        except (FileNotFoundError, KeyError):
+            st.error("Não foi possível encontrar a transação para editar. Retornando à visualização principal.")
+            del st.session_state.editing_transaction_id
+            st.rerun()
+            return
+
+        st.subheader("📝 Editando Transação")
+        with st.form("form_edit_ativo"):
+            st.info(f"Editando a transação do ativo **{transaction_data['ticker']}** de {pd.to_datetime(transaction_data['data_compra']).strftime('%d/%m/%Y')}.")
+            
+            cols = st.columns([1, 2, 1, 1, 1])
+            with cols[0]:
+                tipo_transacao_edit = transaction_data.get('tipo', 'Compra')
+                edit_tipo = st.selectbox("Tipo", ["Compra", "Venda"], index=["Compra", "Venda"].index(tipo_transacao_edit))
+            with cols[1]:
+                edit_ticker = st.text_input("Ticker", value=transaction_data['ticker']).upper()
+            with cols[2]:
+                edit_quantidade = st.number_input("Quantidade", value=float(transaction_data['quantidade']), min_value=0.00001, format="%.5f")
+            with cols[3]:
+                edit_preco = st.number_input("Preço (un.)", value=float(transaction_data['preco_compra']), min_value=0.01, format="%.2f")
+            with cols[4]:
+                edit_data = st.date_input("Data", value=pd.to_datetime(transaction_data['data_compra']), max_value=datetime.now(), format="DD/MM/YYYY")
+
+            c1, c2 = st.columns(2)
+            if c1.form_submit_button("Salvar Alterações", use_container_width=True, type="primary"):
+                ticker_final = edit_ticker
+                if '.' not in ticker_final and any(char.isdigit() for char in ticker_final):
+                    ticker_final = f"{ticker_final}.SA"
+                
+                sucesso = atualizar_ativo_carteira(email_usuario, transaction_id, ticker_final, edit_quantidade, edit_preco, edit_data, edit_tipo)
+                if sucesso:
+                    st.toast("Transação atualizada com sucesso!", icon="✅")
+                    del st.session_state.editing_transaction_id
+                    st.rerun()
+                else:
+                    st.error("Falha ao atualizar a transação.")
+
+            if c2.form_submit_button("Cancelar", use_container_width=True):
+                del st.session_state.editing_transaction_id
+                st.rerun()
+        return # Impede a renderização do resto da página
+
+    # --- MODO DE VISUALIZAÇÃO NORMAL ---
+    with st.form("form_add_ativo", clear_on_submit=True):
+        st.subheader("Adicionar Nova Transação")
+        col1, col2, col3, col4, col5 = st.columns([1, 2, 1, 1, 1])
+        with col1:
+            tipo_transacao = st.selectbox("Tipo", ["Compra", "Venda"], key="tipo_transacao")
+        with col2:
+            ticker_input = st.text_input("Ticker do Ativo (ex: PETR4, AAPL)").upper()
+        with col3:
+            quantidade = st.number_input("Quantidade", min_value=0.00001, format="%.5f")
+        with col4:
+            preco_compra = st.number_input("Preço (un.)", min_value=0.01, format="%.2f")
+        with col5:
+            data_compra = st.date_input("Data", value=datetime.now(), max_value=datetime.now(), format="DD/MM/YYYY")
+        
+        if st.form_submit_button("Adicionar à Carteira", use_container_width=True):
+            if ticker_input and quantidade > 0 and preco_compra > 0:
+                ticker_final = ticker_input
+                if '.' not in ticker_final and any(char.isdigit() for char in ticker_final):
+                    ticker_final = f"{ticker_final}.SA"
+                
+                with st.spinner(f"Validando o ticker {ticker_final}..."):
+                    dados_validacao = yf.Ticker(ticker_final).history(period="1d")
+                
+                if dados_validacao.empty:
+                    st.error(f"O ticker '{ticker_final}' parece ser inválido ou não possui dados recentes. O ativo não foi adicionado.")
+                else:
+                    adicionar_ativo_carteira(email_usuario, ticker_final, quantidade, preco_compra, data_compra, tipo_transacao)
+                    st.success(f"{tipo_transacao} de {ticker_final} adicionada com sucesso!")
+                    st.rerun()
+            else:
+                st.error("Por favor, preencha todos os campos corretamente.")
+
+    st.markdown("---")
+    st.subheader("Composição Atual")
+    
+    with st.spinner("Atualizando dados da carteira..."):
+        dados_carteira = calcular_dados_carteira(email_usuario)
+        verificar_e_enviar_alertas(email_usuario, dados_carteira)
+
+    if dados_carteira.get("erro") == "Carteira vazia":
+        st.info("Sua carteira está vazia. Adicione uma transação no formulário acima para começar.")
+    elif dados_carteira.get("erro"):
+        st.error(f"Ocorreu um erro ao carregar sua carteira: {dados_carteira['erro']}")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Custo da Carteira", f"R$ {dados_carteira['total_investido']:,.2f}")
+        c2.metric("Valor Atual da Carteira", f"R$ {dados_carteira['valor_atual_total']:,.2f}")
+        c3.metric("L/P Não Realizado", f"R$ {dados_carteira['lucro_nao_realizado_total']:,.2f}")
+        c4.metric("L/P Realizado", f"R$ {dados_carteira['lucro_realizado_total']:,.2f}")
+
+        posicao_atual_df = dados_carteira['posicao_atual_df']
+        if not posicao_atual_df.empty:
+            alertas_usuario = carregar_alertas_usuario(email_usuario)
+            if not alertas_usuario.empty:
+                posicao_atual_df = pd.merge(posicao_atual_df, alertas_usuario[['ticker', 'preco_alvo']], on='ticker', how='left')
+            else:
+                posicao_atual_df['preco_alvo'] = None
+            posicao_atual_df['preco_alvo'].fillna(0.0, inplace=True)
+
+            if dados_carteira['valor_atual_total'] > 0:
+                st.subheader("Distribuição da Carteira")
+                fig = px.pie(posicao_atual_df, values='Valor Atual', names='ticker', title='Distribuição Percentual por Ativo', hole=.3)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            st.subheader("Posição Atual e Alertas de Preço")
+            header_cols = st.columns([2, 1, 2, 2, 2, 2, 3])
+            headers = ['Ticker', 'Qtd.', 'Preço Médio', 'Preço Atual', 'Valor Atual', 'L/P Não Realizado', 'Alerta de Preço (R$)']
+            for col, header in zip(header_cols, headers): col.markdown(f"**{header}**")
+            st.markdown("---")
+
+            for index, row in posicao_atual_df.iterrows():
+                row_cols = st.columns([2, 1, 2, 2, 2, 2, 3])
+                row_cols[0].write(f"**{row['ticker']}**"); row_cols[1].write(f"{row['quantidade_atual']:.2f}"); row_cols[2].write(f"R$ {row['preco_medio_ponderado']:.2f}"); row_cols[3].write(f"R$ {row['Preço Atual']:.2f}"); row_cols[4].write(f"R$ {row['Valor Atual']:.2f}"); row_cols[5].write(f"R$ {row['Lucro/Prejuízo Não Realizado']:+.2f} ({row['Variação (%)']:+.2f}%)")
+                with row_cols[6]:
+                    valor_input = st.number_input("Preço Alvo", min_value=0.0, value=float(row['preco_alvo']), format="%.2f", label_visibility="collapsed", key=f"alert_input_{row['ticker']}")
+                    if st.button("Salvar", key=f"save_alert_{row['ticker']}", use_container_width=True):
+                        salvar_alerta(email_usuario, row['ticker'], valor_input)
+
+    with st.expander("Gerenciar Transações Individuais"):
+        carteira_individual_df = carregar_carteira_usuario(email_usuario)
+        if carteira_individual_df.empty:
+            st.write("Nenhuma transação para gerenciar.")
+        else:
+            if 'tipo' not in carteira_individual_df.columns:
+                carteira_individual_df['tipo'] = 'Compra'
+            carteira_individual_df['tipo'].fillna('Compra', inplace=True)
+
+            c = st.columns([1, 3, 2, 2, 2, 1, 1])
+            c[0].write("**Tipo**"); c[1].write("**Ticker**"); c[2].write("**Qtd.**"); c[3].write("**Preço**"); c[4].write("**Data**")
+            for index, row in carteira_individual_df.sort_values(by='data_compra', ascending=False).iterrows():
+                c = st.columns([1, 3, 2, 2, 2, 1, 1])
+                tipo_transacao = row.get('tipo', 'Compra')
+                cor_tipo = "red" if tipo_transacao == "Venda" else "green"
+                c[0].markdown(f"<span style='color:{cor_tipo};'>{tipo_transacao}</span>", unsafe_allow_html=True)
+                c[1].write(row['ticker'])
+                c[2].write(f"{row['quantidade']:.4f}".rstrip('0').rstrip('.'))
+                c[3].write(f"R$ {row['preco_compra']:.2f}")
+                c[4].write(f"{row['data_compra'].strftime('%d/%m/%Y')}")
+                if c[5].button("✏️", key=f"edit_{index}", help="Editar esta transação"):
+                    st.session_state.editing_transaction_id = index
+                    st.rerun()
+                if c[6].button("🗑️", key=f"delete_{index}", help="Remover esta transação"):
+                    remover_ativo_carteira(email_usuario, index)
+                    st.toast(f"Transação de {row['ticker']} removida!", icon="🗑️")
+                    st.rerun()
+
+def pagina_watchlist():
+    """Renderiza a página da watchlist do usuário."""
+    st.header("👁️ Minha Watchlist")
+    email_usuario = st.session_state.usuario_logado['email']
+
+    with st.form("form_add_watchlist", clear_on_submit=True):
+        ticker_input = st.text_input("Adicionar Ticker à Watchlist", placeholder="Ex: MGLU3, TSLA").upper()
+        if st.form_submit_button("Adicionar", use_container_width=True):
+            if ticker_input:
+                ticker_final = ticker_input
+                if '.' not in ticker_final and any(char.isdigit() for char in ticker_final):
+                    ticker_final = f"{ticker_final}.SA"
+                
+                with st.spinner(f"Validando {ticker_final}..."):
+                    dados_validacao = obter_dados_acao(ticker_final)
+                
+                if "erro" in dados_validacao:
+                    st.error(f"Ticker '{ticker_final}' inválido: {dados_validacao['erro']}")
+                else:
+                    adicionar_ticker_watchlist(email_usuario, ticker_final)
+    
+    st.markdown("---")
+    watchlist = carregar_watchlist_usuario(email_usuario)
+
+    if not watchlist:
+        st.info("Sua watchlist está vazia. Adicione um ticker acima para começar a acompanhar.")
+        return
+
+    try:
+        with st.spinner("Atualizando dados da watchlist..."):
+            tickers_string = " ".join(watchlist)
+            # group_by='ticker' é importante para uma estrutura de dados consistente
+            dados_precos_raw = yf.download(tickers=tickers_string, period='2d', progress=False, group_by='ticker')
+        
+        st.subheader("Ativos Acompanhados")
+        
+        for ticker in sorted(watchlist):
+            info_ticker = obter_info_empresa(ticker)
+            nome_empresa = info_ticker.get('longName', ticker.replace('.SA', ''))
+
+            preco_atual, variacao = None, None
+            try:
+                # Acesso robusto aos dados de preço, corrigido para lidar com a estrutura de yfinance
+                # Verifica se o ticker foi retornado com sucesso antes de tentar acessá-lo.
+                if ticker in dados_precos_raw.columns:
+                    dados_ticker = dados_precos_raw[ticker]
+                    if not dados_ticker.empty and len(dados_ticker['Close'].dropna()) >= 2:
+                        preco_atual = dados_ticker['Close'].dropna().iloc[-1]
+                        preco_anterior = dados_ticker['Close'].dropna().iloc[-2]
+                        variacao = ((preco_atual - preco_anterior) / preco_anterior) * 100
+            except (KeyError, IndexError):
+                pass # Mantém preço e variação como None
+
+            cols = st.columns([4, 2, 1, 1])
+            cols[0].markdown(f"**{nome_empresa}**<br><small>{ticker.replace('.SA', '')}</small>", unsafe_allow_html=True)
+            
+            if preco_atual is not None and variacao is not None:
+                cols[1].metric(label="Preço Atual", value=f"R$ {preco_atual:.2f}", delta=f"{variacao:+.2f}%", label_visibility="collapsed")
+            else:
+                cols[1].metric(label="Preço Atual", value="N/A", delta="", label_visibility="collapsed")
+
+            if cols[2].button("Analisar", key=f"analise_wl_{ticker}", use_container_width=True):
+                st.session_state.ticker_input_key = ticker
+                iniciar_analise()
+                st.toast(f"Análise de {ticker.replace('.SA', '')} pronta na aba 'Análise de Ativos'!", icon="📊")
+
+            if cols[3].button("Remover", key=f"remove_wl_{ticker}", use_container_width=True):
+                remover_ticker_watchlist(email_usuario, ticker)
+            
+            st.markdown("<hr style='margin-top:0.5rem; margin-bottom:0.5rem;'>", unsafe_allow_html=True)
+
+    except Exception:
+        st.error(f"Ocorreu um erro ao buscar os dados da watchlist. Tente novamente mais tarde.")
+
+    # --- Seção de Notícias na Watchlist ---
+    st.markdown("---")
+    st.header("Notícias Recentes da Watchlist")
+    
+    if watchlist: # Verifica se há tickers na watchlist para buscar notícias
+        with st.spinner("Buscando notícias da watchlist..."):
+            noticias_watchlist = obter_noticias_ativos(watchlist)
+        
+        if not noticias_watchlist:
+            st.info("Nenhuma notícia recente encontrada para os ativos da sua watchlist.")
+        else:
+            for ticker, lista_noticias in noticias_watchlist.items():
+                st.subheader(f"Notícias para {ticker.replace('.SA', '')}")
+                for noticia in lista_noticias:
+                    data_publicacao = pd.to_datetime(noticia['providerPublishTime'], unit='s').strftime('%d/%m/%Y %H:%M')
+                    st.markdown(f"**<a href='{noticia['link']}' target='_blank' style='text-decoration: none; color: inherit;'>{noticia['title']}</a>**", unsafe_allow_html=True)
+                    st.caption(f"Fonte: {noticia['publisher']} | Publicado em: {data_publicacao}")
+    else:
+        st.info("Adicione ativos à sua watchlist para ver notícias relacionadas.")
+
+# --- Funções da Watchlist ---
+
+WATCHLIST_FILE = "watchlist.csv"
+
+def carregar_watchlist_usuario(email_usuario):
+    """Carrega a watchlist de um usuário específico."""
+    if not os.path.exists(WATCHLIST_FILE):
+        return []
+    df = pd.read_csv(WATCHLIST_FILE)
+    user_watchlist = df[df['email_usuario'] == email_usuario]
+    return user_watchlist['ticker'].tolist()
+
+def adicionar_ticker_watchlist(email_usuario, ticker):
+    """Adiciona um ticker à watchlist de um usuário."""
+    if not os.path.exists(WATCHLIST_FILE):
+        df = pd.DataFrame(columns=['email_usuario', 'ticker'])
+        df.to_csv(WATCHLIST_FILE, index=False)
+    else:
+        df = pd.read_csv(WATCHLIST_FILE)
+
+    if not ((df['email_usuario'] == email_usuario) & (df['ticker'] == ticker)).any():
+        novo_item = pd.DataFrame([{'email_usuario': email_usuario, 'ticker': ticker}])
+        df = pd.concat([df, novo_item], ignore_index=True)
+        df.to_csv(WATCHLIST_FILE, index=False)
+        st.toast(f"'{ticker.replace('.SA', '')}' adicionado à watchlist!", icon="✅")
+    else:
+        st.warning(f"'{ticker.replace('.SA', '')}' já está na sua watchlist.")
+    st.rerun()
+
+def remover_ticker_watchlist(email_usuario, ticker):
+    """Remove um ticker da watchlist de um usuário."""
+    if not os.path.exists(WATCHLIST_FILE):
+        return
+    df = pd.read_csv(WATCHLIST_FILE)
+    
+    filtro = (df['email_usuario'] == email_usuario) & (df['ticker'] == ticker)
+    if filtro.any():
+        df = df[~filtro]
+        df.to_csv(WATCHLIST_FILE, index=False)
+        st.toast(f"'{ticker.replace('.SA', '')}' removido da watchlist.", icon="🗑️")
+    st.rerun()
+
+def pagina_analise():
+    """Renderiza a página de análise de ativos."""
+    st.header("Análise de Ativos")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.text_input("Digite o ticker e pressione Enter", key="ticker_input_key", on_change=iniciar_analise, placeholder="Ex: AAPL, MSFT, GOOG")
+    with col2:
+        st.button("Analisar Ação", on_click=iniciar_analise, use_container_width=True, type="primary")
+    
+    st.subheader("Parâmetros dos Modelos de Valuation")
+    c1, c2 = st.columns(2)
+    c1.number_input("Taxa de crescimento (Graham) (%)", min_value=-10.0, max_value=100.0, value=5.0, step=0.5, key="taxa_crescimento_input", help="Taxa de crescimento anual estimada (%) para o modelo 'Preço Justo de Graham'.")
+    c2.number_input("Rendimento Títulos 10 Anos (Y) (%)", min_value=0.1, max_value=20.0, value=4.5, step=0.1, key="bond_yield_input", help="Rendimento dos títulos do Tesouro Americano de 10 anos. Usado na fórmula de Graham.")
+
+    st.markdown("---")
+    if st.session_state.input_error:
+        st.error(f"❌ Erro de Validação: {st.session_state.input_error}")
+
+    if st.session_state.ticker_analisado:
+        ticker_para_analise = st.session_state.ticker_analisado
+        with st.spinner(f"Buscando dados para {ticker_para_analise}..."):
+            dados_acao = obter_dados_acao(ticker_para_analise)
+
+        if "erro" in dados_acao:
+            st.error(f"❌ Erro ao obter dados: {dados_acao['erro']}")
+        else:
+            if st.session_state.get('ticker_foi_ajustado', False):
+                company_name = dados_acao.get('longName') or dados_acao.get('symbol')
+                st.success(f"Analisando **{company_name}**")
+                st.session_state.ticker_foi_ajustado = False
+
+            resultados = []
+            lpa = dados_acao.get('trailingEps')
+            vpa = dados_acao.get('bookValue')
+
+            if lpa is not None and lpa > 0:
+                resultados.append(calcular_preco_justo_graham(dados_acao, st.session_state.taxa_crescimento_input, st.session_state.bond_yield_input))
+            else:
+                lpa_formatado = f"{lpa:.2f}" if lpa is not None else "N/A"
+                resultados.append({"modelo": "Preço Justo de Graham", "erro": f"O Lucro por Ação (LPA) é nulo ou negativo (LPA atual: {lpa_formatado})."})
+
+            if lpa is not None and lpa > 0 and vpa is not None and vpa > 0:
+                resultados.append(calcular_numero_graham(dados_acao))
+            else:
+                erros_graham_num = []
+                if lpa is None or lpa <= 0: erros_graham_num.append("LPA nulo/negativo")
+                if vpa is None or vpa <= 0: erros_graham_num.append("VPA nulo/negativo")
+                resultados.append({"modelo": "Número de Graham (Valor)", "erro": f"Pré-requisitos não atendidos: {', '.join(erros_graham_num)}."})
+
+            resultados.append(calcular_preco_teto_bazin(dados_acao))
+
+            exibir_resultados_comparativos(resultados)
+            st.write("---")
+            exibir_indicadores_chave(dados_acao)
+            st.write("---")
+
+            for res in resultados:
+                if "erro" not in res: st.session_state.historico.insert(0, res)
+
+            exibir_grafico_precos_interativo(dados_acao['historico_precos'], dados_acao['symbol'])
+            exibir_grafico_dividendos(dados_acao)
+    else:
+        st.info("Digite o ticker de uma ação acima para iniciar a análise.")
+
+def pagina_dashboard():
+    """Renderiza a página principal do Dashboard."""
+    email_usuario = st.session_state.usuario_logado['email']
+    
+    st.header("Resumo da Carteira")
+    dados_carteira = calcular_dados_carteira(email_usuario)
+    verificar_e_enviar_alertas(email_usuario, dados_carteira)
+    
+    if dados_carteira.get("erro") == "Carteira vazia":
+        st.info("Sua carteira está vazia. Adicione transações na aba 'Minha Carteira' para ver o resumo aqui.")
+    elif dados_carteira.get("erro"):
+        st.error(f"Ocorreu um erro ao carregar os dados da carteira: {dados_carteira['erro']}")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Custo da Carteira", f"R$ {dados_carteira['total_investido']:,.2f}")
+        c2.metric("Valor Atual da Carteira", f"R$ {dados_carteira['valor_atual_total']:,.2f}")
+        c3.metric("L/P Não Realizado", f"R$ {dados_carteira['lucro_nao_realizado_total']:,.2f}")
+        c4.metric("L/P Realizado", f"R$ {dados_carteira['lucro_realizado_total']:,.2f}")
+
+        with st.spinner("Gerando gráfico de evolução do patrimônio..."):
+            fig_evolucao = gerar_grafico_evolucao_patrimonio(email_usuario)
+        
+        if fig_evolucao:
+            st.plotly_chart(fig_evolucao, use_container_width=True)
+
+        if dados_carteira['valor_atual_total'] > 0:
+            fig = px.pie(dados_carteira['posicao_atual_df'], values='Valor Atual', names='ticker', title='Distribuição Percentual por Ativo', hole=.3)
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.header("Últimas Análises Realizadas")
+    if not st.session_state.historico:
+        st.info("Nenhuma análise foi realizada ainda. Vá para a aba 'Análise de Ativos' para começar.")
+
+    # --- Seção de Notícias ---
+    st.markdown("---")
+    st.header("Notícias Recentes da Carteira")
+    
+    if not dados_carteira.get("erro"):
+        tickers_carteira = dados_carteira['posicao_atual_df']['ticker'].tolist()
+        if tickers_carteira:
+            with st.spinner("Buscando notícias..."):
+                noticias = obter_noticias_ativos(tickers_carteira)
+            
+            if not noticias:
+                st.info("Nenhuma notícia recente encontrada para os ativos da sua carteira.")
+            else:
+                for ticker, lista_noticias in noticias.items():
+                    st.subheader(f"Notícias para {ticker.replace('.SA', '')}")
+                    for noticia in lista_noticias:
+                        data_publicacao = pd.to_datetime(noticia['providerPublishTime'], unit='s').strftime('%d/%m/%Y %H:%M')
+                        st.markdown(f"**<a href='{noticia['link']}' target='_blank' style='text-decoration: none; color: inherit;'>{noticia['title']}</a>**", unsafe_allow_html=True)
+                        st.caption(f"Fonte: {noticia['publisher']} | Publicado em: {data_publicacao}")
+    else:
+        st.info("Adicione ativos à sua carteira para ver notícias relacionadas.")
+
+# --- Lógica Principal da Interface ---
+
+if "usuario_logado" not in st.session_state:
+    with st.sidebar:
+        st.header("Acesso à Ferramenta")
+        if st.session_state.auth_page == "login":
+            pagina_login()
+        elif st.session_state.auth_page == "criar_conta":
+            pagina_criar_conta()
+        elif st.session_state.auth_page == "recuperar_senha":
+            pagina_recuperar_senha()
+    st.info("⬅️ Faça login ou crie uma conta na barra lateral para começar a usar a ferramenta.")
+
+else: # Usuário está logado
+    with st.sidebar:
+        nome_usuario = st.session_state.usuario_logado['nome']
+        st.success(f"Bem-vindo(a)!\n\n**{nome_usuario}**")
+        if st.button("Sair", use_container_width=True):
+            del st.session_state.usuario_logado
+            st.rerun()
+
+    tab1, tab2, tab3, tab4 = st.tabs(["🏠 Dashboard", "📊 Análise de Ativos", "💼 Minha Carteira", "👁️ Watchlist"])
+
+    with tab1:
+        pagina_dashboard()
+
+    with tab2:
+        pagina_analise()
+
+    with tab3:
+        pagina_carteira()
+
+    with tab4:
+        pagina_watchlist()
+
+    # Exibir histórico de análises no Dashboard
+    if st.session_state.historico and 'pagina_dashboard' in locals():
+        with st.container(): # Usado para garantir que o histórico apareça no local certo
+            dados_para_df = []
+            for res in st.session_state.historico:
+                linha = {'Data': datetime.now().strftime('%d/%m %H:%M'), 'Ticker': res.get('ticker'), 'Modelo': res.get('modelo'), 'Preço Atual': res.get('preco_atual'), 'Valor Calculado': res.get('valor_calculado'), 'Margem Seg. (%)': res.get('margem_seguranca_%')}
+                dados_para_df.append(linha)
+            df_historico = pd.DataFrame(dados_para_df)
+            
+            # A exibição do DF agora está dentro da função do dashboard
+            if 'pagina_dashboard' in locals() and st.session_state.get('current_tab') == '🏠 Dashboard':
+                st.dataframe(df_historico.style.format({'Preço Atual': '$ {:,.2f}', 'Valor Calculado': '$ {:,.2f}', 'Margem Seg. (%)': '{:,.2f}%'}), use_container_width=True)
+                csv_data = df_historico.to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Baixar Histórico em CSV", data=csv_data, file_name='historico_analises.csv', mime='text/csv')

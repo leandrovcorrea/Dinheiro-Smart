@@ -1,0 +1,13 @@
+streamlit
+pandas
+yfinance
+tradingview-ta
+requests
+plotly
+numpy
+feedparser
+bcrypt
+investpy
+yahooquery
+openpyxl
+scikit-learn
