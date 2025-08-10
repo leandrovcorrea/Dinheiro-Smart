@@ -1,9 +1,22 @@
 streamlit
 pandas
 yfinance
+<<<<<<< HEAD
 plotly
 requests
 bcrypt
 feedparser
 tradingview-ta
 numpy
+=======
+tradingview-ta
+requests
+plotly
+numpy
+feedparser
+bcrypt
+investpy
+yahooquery
+openpyxl
+scikit-learn
+>>>>>>> 57254edde3869947a59908919453d8ec4cea0f8f

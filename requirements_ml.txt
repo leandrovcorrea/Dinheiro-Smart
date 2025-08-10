@@ -1,0 +1,12 @@
+streamlit
+pandas
+yfinance
+tradingview-ta
+requests
+plotly
+numpy
+feedparser
+bcrypt
+scikit-learn
+matplotlib
+seaborn
