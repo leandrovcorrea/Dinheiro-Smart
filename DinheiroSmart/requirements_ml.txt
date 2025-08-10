@@ -1,11 +1,12 @@
 streamlit
 pandas
-numpy
 yfinance
-plotly
-scikit-learn
 tradingview-ta
 requests
+plotly
+numpy
 feedparser
 bcrypt
-python-dotenv
+scikit-learn
+matplotlib
+seaborn

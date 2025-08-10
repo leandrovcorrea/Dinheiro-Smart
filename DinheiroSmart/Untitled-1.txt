@@ -1,0 +1,4 @@
+def pagina_dashboard():
+    st.header("🏠 Dashboard")
+    st.write("Bem-vindo ao seu painel! Aqui você verá um resumo da sua carteira e indicadores principais.")
+    # Exemplo: você pode adicionar gráficos, KPIs ou resumos aqui.

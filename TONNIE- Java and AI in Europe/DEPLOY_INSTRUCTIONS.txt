@@ -1,0 +1,22 @@
+INSTRUÇÕES PARA DEPLOY NO RENDER
+
+1. PARA EXECUTAR LOCALMENTE:
+   - Dê um duplo clique no arquivo run_local.bat
+   - Isso instalará as dependências e iniciará o aplicativo
+
+2. PARA DEPLOY NO RENDER:
+   - Crie uma conta em render.com
+   - Clique em "New" e selecione "Web Service"
+   - Conecte seu repositório GitHub
+   - Configure o serviço:
+     * Nome: dinheiro-smart (ou outro nome)
+     * Ambiente: Python
+     * Build Command: pip install -r requirements.txt
+     * Start Command: streamlit run app.py
+   - Clique em "Create Web Service"
+
+OBSERVAÇÕES:
+- Os arquivos Procfile, render.yaml e .streamlit/config.toml são para configuração
+  automática no Render. Não tente executá-los diretamente.
+- O plano gratuito do Render tem limitações e o app será desligado após períodos
+  de inatividade.

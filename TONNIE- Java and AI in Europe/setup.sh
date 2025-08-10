@@ -1,13 +1,19 @@
-mkdir -p ~/.streamlit/
+#!/bin/bash
 
-echo "\
-[general]\n\
-email = \"your-email@domain.com\"\n\
-" > ~/.streamlit/credentials.toml
+# Instalar dependências
+pip install -r requirements.txt
 
-echo "\
-[server]\n\
-headless = true\n\
-enableCORS=false\n\
-port = $PORT\n\
-" > ~/.streamlit/config.toml
+# Criar diretório para Streamlit
+mkdir -p ~/.streamlit
+
+# Configurar Streamlit para servidor
+echo '[server]\nheadless = true\nenableCORS = false\nport = $PORT' > ~/.streamlit/config.toml
+
+# Garantir permissões de arquivos
+chmod -R 777 .
+
+# Criar diretórios para dados se não existirem
+mkdir -p data
+touch data/.keep
+
+echo "Setup concluído com sucesso!"

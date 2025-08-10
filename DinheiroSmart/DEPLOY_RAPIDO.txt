@@ -1,0 +1,25 @@
+🚀 SITES ABERTOS AUTOMATICAMENTE!
+
+📋 DADOS PARA COLAR:
+Repository: leandrovcorrea/Dinheiro-mart
+Branch: main
+Main file: app.py
+
+🎯 STREAMLIT CLOUD (MAIS FÁCIL):
+1. Faça login/cadastro
+2. "New app" 
+3. Cole: leandrovcorrea/Dinheiro-mart
+4. Deploy!
+
+🔧 RENDER.COM:
+1. "New Web Service"
+2. Connect GitHub
+3. Selecione: Dinheiro-mart
+4. Deploy automático!
+
+⚡ RAILWAY.APP:
+1. "Deploy from GitHub"
+2. Selecione: Dinheiro-mart
+3. Deploy automático!
+
+✅ SEU APP ESTARÁ ONLINE EM 2-3 MINUTOS!

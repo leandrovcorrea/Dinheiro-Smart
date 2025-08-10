@@ -1,12 +1,28 @@
-# Arquivos de dados gerados pela aplicação
-*.csv
-*.db
-
-# Arquivos de configuração local e segredos
-.streamlit/secrets.toml
+# Arquivos de ambiente
 .env
+.env.local
 
-# Arquivos de cache e ambiente do Python
+# Arquivos de dados
+*.csv
+*.xlsx
+
+# Cache Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Ambiente virtual
+venv/
+env/
+ENV/
+
+# Arquivos de configuração local
+.streamlit/secrets.toml
+
+# Logs
 *.log
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db

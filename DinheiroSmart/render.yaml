@@ -3,7 +3,7 @@ services:
     name: dinheiro-smart
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app.py
+    startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
     envVars:
       - key: PYTHON_VERSION
-        value: 3.9.0
+        value: 3.11.0

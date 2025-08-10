@@ -1294,6 +1294,22 @@ def obter_splits_conhecidos(ticker: str):
     
     return pd.Series(dtype=float)
 
+def ajustar_preco_medio_splits(ticker, preco_medio, data_compra):
+    """Ajusta o preço médio considerando splits conhecidos."""
+    splits = obter_splits_conhecidos(ticker)
+    if splits.empty:
+        return preco_medio
+    
+    preco_ajustado = preco_medio
+    data_compra_dt = pd.to_datetime(data_compra)
+    
+    for split_date, split_ratio in splits.items():
+        # Se a compra foi antes do split, ajusta o preço
+        if data_compra_dt < split_date:
+            preco_ajustado = preco_ajustado / split_ratio
+    
+    return preco_ajustado
+
 def obter_dividendos_historicos_conhecidos(ticker: str):
     """Dados históricos conhecidos para ações específicas."""
     dados_conhecidos = {
@@ -1355,7 +1371,12 @@ def _consolidar_posicao_atual(carteira_df):
 
     # Agrupar compras para calcular preço médio
     if not compras_df.empty:
-        compras_df['Custo Total Individual'] = compras_df['quantidade'] * compras_df['preco_compra']
+        # Ajusta preços para splits conhecidos
+        compras_df['preco_ajustado'] = compras_df.apply(
+            lambda row: ajustar_preco_medio_splits(row['ticker'], row['preco_compra'], row['data_compra']), 
+            axis=1
+        )
+        compras_df['Custo Total Individual'] = compras_df['quantidade'] * compras_df['preco_ajustado']
         compras_agrupadas = compras_df.groupby('ticker').agg(
             qtd_comprada=('quantidade', 'sum'),
             custo_total_compras=('Custo Total Individual', 'sum')
@@ -1800,7 +1821,7 @@ def pagina_carteira():
         st.dataframe(exemplo_df, use_container_width=True)
     
     # Botão para limpar carteira (apenas para testes)
-    with st.expander("⚠️ Limpar Dados da Carteira (TESTE)", expanded=False):
+    with st.expander("⚠️ Limpar Dados da Carteira ", expanded=False):
         st.warning("Esta ação irá remover TODAS as transações da sua carteira. Use apenas para testes!")
         if st.button("🗑️ Limpar Toda a Carteira", type="secondary"):
             # Limpar transações da carteira
@@ -2787,6 +2808,22 @@ def _gerar_analise_inteligente_carteira(posicao_atual_df, dados_carteira):
         
         if num_ativos < 5:
             analise['pontos_atencao'].append("Carteira pouco diversificada")
+        
+        if concentracao_max > 50:
+            analise['pontos_atencao'].append(f"Alta concentração em um setor ({concentracao_max:.1f}%)")
+        
+        if pe_medio > 25:
+            analise['pontos_atencao'].append(f"P/L médio elevado ({pe_medio:.1f}x)")
+        
+        if total_dy / 100 < 0.03:
+            analise['pontos_atencao'].append("Baixo rendimento em dividendos")
+        
+        if num_setores < 3:
+            analise['pontos_atencao'].append("Poucos setores representados na carteira")
+        
+        # Adiciona pelo menos um ponto de atenção se não houver nenhum
+        if not analise['pontos_atencao']:
+            analise['pontos_atencao'].append("Continue monitorando a performance da carteira")
         
         return analise
         
@@ -3954,16 +3991,44 @@ def pagina_backtesting():
 def main():
     st.set_page_config(page_title="Dinheiro $mart", layout="wide", page_icon="💰")
     
+    # Inicialização do estado da sessão (DEVE SER PRIMEIRO)
+    if 'usuario_logado' not in st.session_state: st.session_state.usuario_logado = None
+    if 'auth_page' not in st.session_state: st.session_state.auth_page = "login"
+    if 'ticker_analisado' not in st.session_state: st.session_state.ticker_analisado = ""
+    if 'active_tab_index' not in st.session_state: st.session_state.active_tab_index = 0
+    
     # Header mais amigável
-    st.markdown("""
-        <div style="text-align: center; padding: 1rem; background: linear-gradient(90deg, #1f2937 0%, #374151 100%); border-radius: 10px; margin-bottom: 2rem;">
-            <h1 style="color: #10b981; font-size: 3rem; margin: 0;">💰 Dinheiro $mart</h1>
-            <p style="color: #d1d5db; font-size: 1.2rem; margin: 0.5rem 0;">Sua ferramenta completa para investimentos inteligentes</p>
-            <p style="color: #9ca3af; font-size: 0.9rem; margin: 0;">✨ Análise • 📊 Gestão • 🎯 Estratégias</p>
-        </div>
-    """, unsafe_allow_html=True)
+    if st.session_state.usuario_logado is not None:
+        # Header com botão de logout quando logado
+        col1, col2, col3 = st.columns([1, 6, 1])
+        with col1:
+            st.empty()
+        with col2:
+            st.markdown("""
+                <div style="text-align: center; padding: 1rem; background: linear-gradient(90deg, #1f2937 0%, #374151 100%); border-radius: 10px;">
+                    <h1 style="color: #10b981; font-size: 3rem; margin: 0;">💰 Dinheiro $mart</h1>
+                    <p style="color: #d1d5db; font-size: 1.2rem; margin: 0.5rem 0;">Sua ferramenta completa para investimentos inteligentes</p>
+                    <p style="color: #9ca3af; font-size: 0.9rem; margin: 0;">✨ Análise • 📊 Gestão • 🎯 Estratégias</p>
+                </div>
+            """, unsafe_allow_html=True)
+        with col3:
+            nome_usuario = st.session_state.usuario_logado['nome']
+            st.markdown(f"**       Olá, {nome_usuario}!**")
+            if st.button("🚪 Sair", use_container_width=True, type="secondary"):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+    else:
+        # Header normal quando não logado
+        st.markdown("""
+            <div style="text-align: center; padding: 1rem; background: linear-gradient(90deg, #1f2937 0%, #374151 100%); border-radius: 10px; margin-bottom: 2rem;">
+                <h1 style="color: #10b981; font-size: 3rem; margin: 0;">💰 Dinheiro $mart</h1>
+                <p style="color: #d1d5db; font-size: 1.2rem; margin: 0.5rem 0;">Sua ferramenta completa para investimentos inteligentes</p>
+                <p style="color: #9ca3af; font-size: 0.9rem; margin: 0;">✨ Análise • 📊 Gestão • 🎯 Estratégias</p>
+            </div>
+        """, unsafe_allow_html=True)
 
-    # Inject custom CSS for tab font size
+    # Inject custom CSS for tab font size and hide sidebar when logged in
     st.markdown("""
         <style>
         [data-testid="stTabs"] button {
@@ -3971,11 +4036,22 @@ def main():
         }
         </style>
     """, unsafe_allow_html=True)
-    # Inicialização do estado da sessão
-    if 'usuario_logado' not in st.session_state: st.session_state.usuario_logado = None
-    if 'auth_page' not in st.session_state: st.session_state.auth_page = "login"
-    if 'ticker_analisado' not in st.session_state: st.session_state.ticker_analisado = ""
-    if 'active_tab_index' not in st.session_state: st.session_state.active_tab_index = 0
+    
+    # Hide sidebar automatically when user is logged in
+    if st.session_state.usuario_logado is not None:
+        st.markdown("""
+            <style>
+            [data-testid="stSidebar"] {
+                display: none;
+            }
+            [data-testid="stSidebarNav"] {
+                display: none;
+            }
+            .css-1d391kg {
+                display: none;
+            }
+            </style>
+        """, unsafe_allow_html=True)
 
     if st.session_state.usuario_logado is None:
         # Interface de boas-vindas mais amigável
@@ -4026,13 +4102,6 @@ def main():
     </p>
     """, unsafe_allow_html=True)
     else:
-        with st.sidebar:
-            nome_usuario = st.session_state.usuario_logado['nome']
-            st.markdown(f"**{nome_usuario}**")
-            if st.button("Sair", use_container_width=True):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
         
         # Abas com descrições mais amigáveis
         tab_names = [

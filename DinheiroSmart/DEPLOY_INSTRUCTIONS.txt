@@ -1,0 +1,24 @@
+INSTRUÇÕES PARA PUBLICAR SEU APP:
+
+1. STREAMLIT CLOUD (RECOMENDADO):
+   - Site já aberto: https://share.streamlit.io
+   - Clique "New app"
+   - GitHub repo: leandrovcorrea/Dinheiro-mart
+   - Branch: main
+   - Main file path: app.py
+   - Clique "Deploy"
+
+2. CONFIGURAR SECRETS (APÓS DEPLOY):
+   - No painel do app → Settings → Secrets
+   - Cole este código:
+
+[email_credentials]
+sender_email = "SEU_EMAIL@gmail.com"
+sender_password = "SUA_SENHA_DE_APP_GMAIL"
+
+3. ALTERNATIVAS RÁPIDAS:
+   - Render.com: https://render.com (conecte GitHub)
+   - Railway.app: https://railway.app (conecte GitHub)
+   - Vercel.com: https://vercel.com (conecte GitHub)
+
+SEU REPOSITÓRIO: https://github.com/leandrovcorrea/Dinheiro-mart

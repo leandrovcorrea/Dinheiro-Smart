@@ -1,51 +1,58 @@
-# Como Publicar o Dinheiro Smart
+# Guia de Implantação no Render
 
-## Opções de Deploy
+Este guia explica como implantar o aplicativo Dinheiro $mart no Render.
 
-### 1. Streamlit Cloud (Mais Fácil)
-1. Faça push do código para GitHub
-2. Vá em [share.streamlit.io](https://share.streamlit.io)
-3. Conecte sua conta GitHub
-4. Selecione o repositório
-5. Arquivo principal: `app.py`
-6. Deploy automático!
+## Método 1: Implantação Automática (Recomendado)
 
-### 2. Heroku
-1. Instale Heroku CLI
-2. `heroku create nome-do-app`
-3. `git push heroku main`
-4. `heroku open`
+### 1. Crie uma conta no Render
 
-### 3. Render
-1. Conecte GitHub em [render.com](https://render.com)
-2. Selecione "Web Service"
-3. Build Command: `pip install -r requirements.txt`
-4. Start Command: `streamlit run app.py --server.port=$PORT --server.address=0.0.0.0`
+Acesse [render.com](https://render.com/) e crie uma conta gratuita.
 
-### 4. Vercel
-1. Conecte GitHub em [vercel.com](https://vercel.com)
-2. Deploy automático com vercel.json
+### 2. Conecte seu repositório GitHub
 
-### 5. Railway
-1. Conecte GitHub em [railway.app](https://railway.app)
-2. Deploy automático
+1. No dashboard do Render, clique em "New" e selecione "Blueprint"
+2. Conecte sua conta GitHub e selecione o repositório do projeto
+3. O Render detectará automaticamente o arquivo `render.yaml` e configurará o serviço
 
-## Arquivos Criados
-- `Procfile` - Heroku
-- `runtime.txt` - Versão Python
-- `requirements.txt` - Dependências
-- `render.yaml` - Render
-- `vercel.json` - Vercel
-- `app.yaml` - Google App Engine
-- `setup.sh` - Script Heroku
-- `.streamlit/config.toml` - Configuração Streamlit
+### 3. Implante o serviço
 
-## Comandos Git
-```bash
-git add .
-git commit -m "Deploy configuration"
-git push origin main
-```
+Clique em "Apply" e aguarde a implantação.
 
-## Recomendação
-Use **Streamlit Cloud** - é gratuito e específico para apps Streamlit!
+## Método 2: Implantação Manual
+
+### 1. Crie uma conta no Render
+
+Acesse [render.com](https://render.com/) e crie uma conta gratuita.
+
+### 2. Crie um novo Web Service
+
+1. No dashboard do Render, clique em "New" e selecione "Web Service"
+2. Conecte sua conta GitHub e selecione o repositório do projeto
+
+### 3. Configure o serviço
+
+Preencha os seguintes campos:
+- **Name**: dinheiro-smart (ou outro nome de sua escolha)
+- **Environment**: Python
+- **Build Command**: `pip install -r requirements.txt`
+- **Start Command**: `streamlit run app.py`
+
+### 4. Implante o serviço
+
+Clique em "Create Web Service" e aguarde a implantação.
+
+## Arquivos de Configuração
+
+O projeto já contém os arquivos necessários para implantação:
+
+- **requirements.txt**: Lista todas as dependências do projeto
+- **render.yaml**: Configuração automática para o Render
+- **.streamlit/config.toml**: Configurações do Streamlit para produção
+
+## Observações Importantes
+
+- O plano gratuito do Render tem limitações de recursos e tempo de execução
+- O aplicativo será desligado após períodos de inatividade
+- Dados armazenados localmente (CSVs) serão perdidos quando o serviço for reiniciado
+
+Para persistência de dados, considere usar um banco de dados externo como PostgreSQL ou MongoDB.

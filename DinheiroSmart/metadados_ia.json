@@ -1,0 +1,40 @@
+{
+  "acoes": {
+    "descricao": "Dados fundamentalistas de ações brasileiras",
+    "fonte": "Status Invest",
+    "colunas": {
+      "ticker": "Código da ação na B3",
+      "preco": "Preço atual da ação",
+      "dy": "Dividend Yield (%)",
+      "pl": "Preço/Lucro",
+      "pvp": "Preço/Valor Patrimonial",
+      "roe": "Return on Equity (%)",
+      "roa": "Return on Assets (%)",
+      "roic": "Return on Invested Capital (%)",
+      "margem_bruta": "Margem Bruta (%)",
+      "margem_ebit": "Margem EBIT (%)",
+      "margem_liquida": "Margem Líquida (%)",
+      "liquidez_corrente": "Liquidez Corrente",
+      "vpa": "Valor Patrimonial por Ação",
+      "lpa": "Lucro por Ação",
+      "liquidez_diaria": "Liquidez Média Diária",
+      "valor_mercado": "Valor de Mercado"
+    }
+  },
+  "fiis": {
+    "descricao": "Dados de Fundos de Investimento Imobiliário",
+    "fonte": "Status Invest",
+    "colunas": {
+      "ticker": "Código do FII na B3",
+      "preco": "Preço atual da cota",
+      "dy": "Dividend Yield (%)",
+      "pvp": "Preço/Valor Patrimonial",
+      "valor_patrimonial": "Valor Patrimonial da Cota",
+      "liquidez_diaria": "Liquidez Média Diária",
+      "percentual_caixa": "Percentual em Caixa (%)",
+      "patrimonio": "Patrimônio Líquido",
+      "num_cotistas": "Número de Cotistas",
+      "gestao": "Tipo de Gestão (Ativa/Passiva)"
+    }
+  }
+}
